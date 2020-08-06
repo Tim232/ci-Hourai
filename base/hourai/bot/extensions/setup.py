@@ -76,6 +76,7 @@ class Teardown(cogs.BaseCog):
         with self.bot.create_storage_session() as session:
             await asyncio.gather(
                 session.guild_configs.clear(guild.id),
+                session.music_states.clear(guild.id),
                 self.__clear_sql(session, guild)
             )
 

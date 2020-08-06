@@ -27,7 +27,8 @@ class StoragePrefix(enum.Enum):
     # Persistent Guild Level Data
     #   Generally stored in Redis as a hash with all submodels underneath it.
     GUILD_CONFIGS = 1
-    # Cached bans. Ephemeral data that have expirations assigned to them.
+    MUSIC_STATES = 3
+    # Ephemeral data that have expirations assigned to them.
     BANS = 2
 
 
@@ -116,6 +117,12 @@ class Storage:
 
     def __setup_caches(self):
         self.bans = bans.BanStorage(self, StoragePrefix.BANS.value)
+
+        self.music_states = caches.Cache(
+                caches.RedisStore(self.redis, timeout=None),
+                key_coder=_prefixize(GuildPrefix.MUSIC_STATES.value),
+                value_coder=protobuf(proto.MusicBotState).compressed(),
+                local_cache_size=0)
 
         for conf in Storage._get_cache_configs():
             # Initialize Parameters

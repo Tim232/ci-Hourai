@@ -51,6 +51,8 @@ class LRUCache:
         """Sets the value of a single key in the cache. Added to end of LRU
         queue. O(1) time.
         """
+        if self.max_size <= 0:
+            return
         ttl = ttl or self.default_ttl
         self.cache[key] = LRUCache.Entry(value, ttl or self.default_ttl)
         self.cache.move_to_end(key)

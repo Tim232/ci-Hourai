@@ -90,13 +90,24 @@ class Music(cogs.BaseCog):
             except ValueError:
                 args['host'] = socket.gethostbyname(node_cfg.host)
 
-            # Initiate our nodes. For now only using one
+            # Initiate our nodes.
             await self.bot.wavelink.initiate_node(**args)
 
         nodes = self.bot.get_config_value('music.nodes', default=(),
                                           type=tuple)
         await asyncio.gather(*[initialize_node(node_cfg)
                                for node_cfg in nodes])
+
+        # Start up players for all of the available guilds
+        async def start_player(guild):
+            try:
+                saved_state = await self.bot.storage.music_states.get(guild.id)
+                if saved_state is not None:
+                    await self.get_player(guild).load_from_proto(saved_state)
+            except Exception:
+                pass
+
+        await asyncio.gather(*[start_player(g) for g in self.bot.guilds])
 
     def get_player(self, guild):
         return self.bot.wavelink.get_player(guild.id, cls=HouraiMusicPlayer)
@@ -115,8 +126,8 @@ class Music(cogs.BaseCog):
            ctx.channel in channels):
             return True
         return commands.CheckFailure(
-                message=f'Music commands can only be used in these channel(s): '
-                        f'{", ".join(ch.mention for ch in channels)}')
+                message=f'Music commands can only be used in these channel(s):'
+                        f' {", ".join(ch.mention for ch in channels)}')
 
     @commands.Cog.listener()
     async def on_voice_state_change(self, member, before, after):

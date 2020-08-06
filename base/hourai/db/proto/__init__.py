@@ -4,6 +4,7 @@ from .ban_pb2 import *  # noqa
 from .escalation_pb2 import *  # noqa
 from .event_pb2 import *  # noqa
 from .guild_configs_pb2 import *  # noqa
+from .music_state_pb2 import *  # noqa
 
 
 def get_field(msg, field):

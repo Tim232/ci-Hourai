@@ -1,0 +1,26 @@
+syntax = "proto2";
+
+import "google/protobuf/struct.proto";
+
+package hourai.db.proto;
+
+message MusicBotState {
+  optional uint64 channel_id = 1;
+  // The currently playing track.
+  //
+  // The raw bytes of the track identifier. Must be converted to base64 strings
+  // to get the track information from the Lavalink server.
+  optional bytes currently_playing = 2;
+  optional uint64 currrent_requestor = 3;
+  repeated uint64 skip_votes = 4;
+  // The queue of music for each user. Order matters.
+  repeated UserMusicQueue user_queues = 5;
+}
+
+message UserMusicQueue {
+  optional uint64 user_id = 1;
+  // The raw bytes of the track identifiers. Must be converted to base64 strings
+  // to get the track information from the Lavalink server.
+  // Max: 500 tracks per person.
+  repeated bytes tracks = 2;
+}

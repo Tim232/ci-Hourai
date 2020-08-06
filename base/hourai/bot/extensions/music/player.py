@@ -1,20 +1,24 @@
-import discord
 import asyncio
+import base64
+import discord
 import logging
-import wavelink
 import math
-from .queue import MusicQueue
+import wavelink
 from . import utils
+from .queue import MusicQueue
 from hourai import utils as hourai_utils
+from hourai.db import proto
 from hourai.utils import embed
 from wavelink.eqs import Equalizer
 
 log = logging.getLogger('hourai.music.player')
 
+TRACK_BUILD_SEMAPHORE = asyncio.Semaphore(500)
 
 PROGRESS_BAR_WIDTH = 12
 TRACKS_PER_PAGE = 10
 POST_TRACK_WAIT = 1.5
+MAX_STORED_TRACKS = 250
 
 
 class Unauthorized(Exception):
@@ -62,6 +66,7 @@ class HouraiMusicPlayer(wavelink.Player):
         await super().disconnect()
         self.current = None
         self._requestor_id = None
+        self.queue.clear()
         self.skip_votes.clear()
 
     async def hook(self, event):
@@ -117,29 +122,32 @@ class HouraiMusicPlayer(wavelink.Player):
         if self.is_connected and len(self.queue) <= 0:
             # Stop playing the song and disconnect
             await self.disconnect()
-            await super().stop()
+            await asyncio.gather(super().stop(), self.save_state())
             return
 
         requestor_id, song = await self.queue.get()
-        if not song:
-            #TODO(james7132): Log an error here.
-            return
+        if song:
+            if not self.is_connected:
+                channel = await self.get_voice_channel()
+                if channel is None:
+                    return
+                await self.connect(channel.id)
 
-        if not self.is_connected:
-            channel = await self.get_voice_channel()
-            if channel is None:
-                return
-            await self.connect(channel.id)
-
-        self.current = song
-        self._requestor_id = requestor_id
-        await self.play(song)
+            self.current = song
+            self._requestor_id = requestor_id
+            await self.play(song)
+        else:
+            # TODO(james7132): Log an error here.
+            pass
+        await self.save_state()
 
     async def enqueue(self, user, track):
         """Adds a single track to the queue from a given user."""
         await self.queue.put((user.id, track))
         if not self.is_playing:
             await self.play_next()
+        else:
+            await self.save_state()
 
     async def remove_entry(self, user, idx):
         """Removes a track from the player queue.
@@ -155,6 +163,8 @@ class HouraiMusicPlayer(wavelink.Player):
         assert res == (user_id, track)
         if len(self.queue) <= 0:
             await self.play_next()
+        else:
+            await self.save_state()
         return res
 
     async def clear_user(self, user):
@@ -162,11 +172,15 @@ class HouraiMusicPlayer(wavelink.Player):
         count = self.queue.remove_all(user.id)
         if len(self.queue) <= 0:
             await self.play_next()
+        else:
+            await self.save_state()
         return count
 
-    def shuffle_user(self, user):
+    async def shuffle_user(self, user):
         """Shuffles all of the user's enqueued tracks from the queue"""
-        return self.queue.shuffle(user.id)
+        res = self.queue.shuffle(user.id)
+        await self.save_state()
+        return res
 
     async def vote_to_skip(self, user, threshold):
         """Adds a vote to skip the current song. If over the threshold it will
@@ -178,18 +192,21 @@ class HouraiMusicPlayer(wavelink.Player):
         if user.id == self._requestor_id or len(self.skip_votes) >= threshold:
             await self.play_next()
             return True
+        else:
+            await self.save_state()
         return False
 
     def clear_vote(self, user):
         """Removes a vote to skip from the vote pool."""
         self.skip_votes.remove(user.id)
+        self.bot.loop.create_task(self.save_state())
 
     async def stop(self):
         """Clears the queue and disconnects the voice client."""
         self.queue.clear()
-        await self.play_next()
         await asyncio.gather(*[ui_msg.stop() for ui_msg in self.ui_msgs])
         self.ui_msgs.clear()
+        await self.play_next()
 
     async def set_volume(self, volume):
         await super().set_volume(volume)
@@ -212,6 +229,65 @@ class HouraiMusicPlayer(wavelink.Player):
         ui = ui_type(self)
         self.ui_msgs.append(ui)
         return await ui.run(channel)
+
+    def save_state(self):
+        return self.bot.storage.music_states.set(
+                self.guild.id, self.state_to_proto())
+
+    def state_to_proto(self):
+        state_proto = proto.MusicBotState()
+
+        state_proto.skip_votes.add(self.skip_votes)
+
+        if self.voice_channel is not None:
+            self.channel_id = self.voice_channel.id
+
+        if self.current is not None:
+            assert self._requestor_id is not None
+            state_proto.currently_playing = base64.b64decode(self.current.id)
+            state_proto.current_requestor = self._requestor_id
+
+        for requestor_id in self.queue.state():
+            track_ids = [base64.b64decode(track.id) for track in
+                         self.queue.get_all(requestor_id)]
+
+            queue_proto = state_proto.user_queues.add()
+            queue_proto.user_id = requestor_id
+            queue_proto.tracks.extend(track_ids[:MAX_STORED_TRACKS])
+        return state_proto
+
+    async def load_state_from_proto(self, state_proto):
+        self.skip_votes = set(state_proto.skip_votes)
+
+        if state_proto.HasField('channel_id'):
+            await self.connect(state_proto.channel_id)
+        elif self.voice_channel is not None:
+            await self.disconnect()
+
+        queue = MusicQueue()
+        for user_queue in state_proto.user_queues:
+            tracks = await asyncio.gather(
+                    *[self._decode_track(enc) for enc in user_queue.tracks])
+            for track in tracks:
+                if track is not None:
+                    queue.put((user_queue.user_id, track))
+
+        if state_proto.HasField('currently_playing'):
+            self.current = self._decode_track(state_proto.currently_playing)
+            self._requestor_id = state_proto.requestor
+            await self.play(self.current)
+        else:
+            self.current = None
+
+    async def _decode_track(self, track_encoded):
+        track_id = base64.b64encode(track_encoded)
+        await TRACK_BUILD_SEMAPHORE.acquire()
+        try:
+            return await self.bot.wavelink.build_track(track_id)
+        except wavelink.TrackBuildError:
+            return None
+        finally:
+            TRACK_BUILD_SEMAPHORE.release()
 
 
 class MusicPlayerUI(embed.MessageUI):
@@ -306,7 +382,8 @@ class MusicQueueUI(MusicNowPlayingUI):
             idx += 1
         ui_embed.description = '\n'.join(elem)
         if page_count > 1:
-            ui_embed.set_footer(text=f'Page {self.current_page + 1}/{page_count}')
+            ui_embed.set_footer(text=f'Page {self.current_page + 1}/'
+                                     f'{page_count}')
         self.iterations_left -= 1
         if self.iterations_left <= 0:
             await self.stop()

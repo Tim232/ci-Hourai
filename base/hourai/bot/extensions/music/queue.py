@@ -46,6 +46,19 @@ class MusicQueue(asyncio.Queue):
             random.shuffle(queue)
         return len(queue) if queue is not None else 0
 
+    def get_all(self, key) -> list:
+        """Gets all items with a given key in the order they appear in the
+        queue. Returns an empty list if none are found.
+        """
+        queue = self._queue.get(key)
+        return list(queue) if queue else []
+
+    def keys(self) -> list:
+        """Gets all of the keys in the queue, in the order they are iterated
+        over.
+        """
+        return list(self._queue.keys())
+
     def clear(self):
         """Clears all elements in the queue. This is an O(1) operation."""
         self._queue.clear()
